@@ -71,52 +71,106 @@ const MARIO_TRACKS: Track[] = [
   },
 ]
 
-function getShapePoint(t: number, isSilence: boolean): { x: number; y: number } {
+// --- Геометрия сечения модуля (кусок шестигранника, 60°) ---
+const APOTHEM = 51.96 // расстояние от центра до фасадной грани (apothem правильного 6-угольника)
+const HALF = 30 // половина ширины фасадной грани (вершины при x = ±30)
+const LOCK_DEPTH = 4 // глубина/высота замка "ласточкин хвост"
+const RAIL = 3 // размер квадратного канала направляющей (3x3 мм)
+const APEX_TRIM = 4 // на сколько мм вдоль каждой радиальной грани срезается острый угол у центра
+const PIT_DEPTH = 1.5 // максимальная глубина "акустической ямы" (паузы)
+
+// Единичный вектор от центра к правой вершине и нормаль к радиальной грани (внутрь модуля)
+const RX = 0.5
+const RY = 0.866
+const NX = -0.866
+const NY = 0.5
+
+// Угловой паз направляющей у ПРАВОЙ вершины. Канал 3x3 центрируется на радиальном
+// ребре (на стыке двух модулей) и открывается наружу. Каждый модуль вырезает свою
+// половину: плоская стенка параллельна радиальному ребру и смещена на RAIL/2 внутрь.
+const CH_FLOOR = { x: HALF - RAIL * RX, y: APOTHEM - RAIL * RY } // дно канала на радиальном ребре
+const CH_INNER = { x: CH_FLOOR.x + (RAIL / 2) * NX, y: CH_FLOOR.y + (RAIL / 2) * NY } // внутренний угол паза
+// Точка, где стенка паза выходит на фасадную грань (y = APOTHEM)
+const _N3 = { x: HALF + (RAIL / 2) * NX, y: APOTHEM + (RAIL / 2) * NY }
+const _aFace = (_N3.y - APOTHEM) / RY
+const CH_FACE = { x: _N3.x - _aFace * RX, y: APOTHEM }
+
+// Левая вершина — зеркало правой по оси X
+const CHL_FLOOR = { x: -CH_FLOOR.x, y: CH_FLOOR.y }
+const CHL_INNER = { x: -CH_INNER.x, y: CH_INNER.y }
+const CHL_FACE = { x: -CH_FACE.x, y: CH_FACE.y }
+
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t
+
+// Возвращает точку периметра. depth — текущая глубина "акустической ямы" в мм
+// (0 для звучащей ноты, плавно нарастает/спадает по слоям для пауз).
+function getShapePoint(t: number, depth: number): { x: number; y: number } {
   if (t < 1 / 3) {
+    // Левое радиальное ребро: от срезанного центра к дну левого паза, с впадиной замка
     const u = t * 3
-    let x = -30 * u
-    let y = 51.96 * u
+    const ax = -APEX_TRIM * RX
+    const ay = APEX_TRIM * RY
+    let x = lerp(ax, CHL_FLOOR.x, u)
+    let y = lerp(ay, CHL_FLOOR.y, u)
     let lock = 0
     if (u > 0.35 && u < 0.65) {
       if (u < 0.4) lock = -(u - 0.35) / 0.05
       else if (u <= 0.6) lock = -1
       else lock = -(0.65 - u) / 0.05
     }
-    x += -0.866 * lock * 4
-    y += -0.5 * lock * 4
+    x += -0.866 * lock * LOCK_DEPTH
+    y += -0.5 * lock * LOCK_DEPTH
     return { x, y }
   } else if (t < 2 / 3) {
+    // Фасадная (музыкальная) грань с угловыми пазами и акустической ямой
     const u = (t - 1 / 3) * 3
-    let x = -30 + 60 * u
-    let y = 51.96
 
-    if (u <= 0.05) {
-      if (u < 0.01) { x = -30; y = 51.96 - 300 * u }
-      else if (u < 0.04) { x = -30 + 100 * (u - 0.01); y = 48.96 }
-      else { x = -27; y = 48.96 + 300 * (u - 0.04) }
-    } else if (u >= 0.95) {
-      if (u < 0.96) { x = 27; y = 51.96 - 300 * (u - 0.95) }
-      else if (u < 0.99) { x = 27 + 100 * (u - 0.96); y = 48.96 }
-      else { x = 30; y = 48.96 + 300 * (u - 0.99) }
-    } else if (isSilence) {
-      if (u < 0.08) y = 51.96 - 1.5 * (u - 0.05) / 0.03
-      else if (u > 0.92) y = 51.96 - 1.5 * (0.95 - u) / 0.03
-      else y = 50.46
+    // Левый угловой паз направляющей
+    if (u < 0.03) {
+      const k = u / 0.03
+      return { x: lerp(CHL_FLOOR.x, CHL_INNER.x, k), y: lerp(CHL_FLOOR.y, CHL_INNER.y, k) }
+    }
+    if (u < 0.06) {
+      const k = (u - 0.03) / 0.03
+      return { x: lerp(CHL_INNER.x, CHL_FACE.x, k), y: lerp(CHL_INNER.y, CHL_FACE.y, k) }
+    }
+    // Правый угловой паз направляющей
+    if (u > 0.97) {
+      const k = (u - 0.97) / 0.03
+      return { x: lerp(CH_INNER.x, CH_FLOOR.x, k), y: lerp(CH_INNER.y, CH_FLOOR.y, k) }
+    }
+    if (u > 0.94) {
+      const k = (u - 0.94) / 0.03
+      return { x: lerp(CH_FACE.x, CH_INNER.x, k), y: lerp(CH_FACE.y, CH_INNER.y, k) }
     }
 
+    // Плоская грань между пазами + акустическая яма
+    const w = (u - 0.06) / 0.88
+    const x = lerp(CHL_FACE.x, CH_FACE.x, w)
+    let y = APOTHEM
+    if (depth > 0) {
+      // Лёгкий горизонтальный заход по краям, чтобы дно ямы не упиралось в вертикальные стенки
+      let r = 1
+      if (w < 0.05) r = w / 0.05
+      else if (w > 0.95) r = (1 - w) / 0.05
+      y = APOTHEM - depth * r
+    }
     return { x, y }
   } else {
+    // Правое радиальное ребро: от дна правого паза к срезанному центру, с шипом замка
     const u = (t - 2 / 3) * 3
-    let x = 30 - 30 * u
-    let y = 51.96 - 51.96 * u
+    const bx = APEX_TRIM * RX
+    const by = APEX_TRIM * RY
+    let x = lerp(CH_FLOOR.x, bx, u)
+    let y = lerp(CH_FLOOR.y, by, u)
     let lock = 0
     if (u > 0.35 && u < 0.65) {
       if (u < 0.4) lock = (u - 0.35) / 0.05
       else if (u <= 0.6) lock = 1
       else lock = (0.65 - u) / 0.05
     }
-    x += 0.866 * lock * 4
-    y += -0.5 * lock * 4
+    x += 0.866 * lock * LOCK_DEPTH
+    y += -0.5 * lock * LOCK_DEPTH
     return { x, y }
   }
 }
@@ -132,9 +186,12 @@ function generateGcode(
   const CENTER_Y = 135.0
   const FILAMENT_DIAM = 1.75
   const LINE_WIDTH = 0.6
-  const STEPS_PER_LAYER = 150
+  const STEPS_PER_LAYER = 240
   const BASE_LAYERS = 10
   const BASE_LAYER_HEIGHT = 0.2
+  // Максимальный горизонтальный сдвиг стенки на единицу высоты слоя при выходе из
+  // ямы паузы. 0.7 ≈ 35° от вертикали — печатается без провисаний (бриджинга).
+  const MAX_OVERHANG = 0.7
 
   const lines: string[] = []
   lines.push(`; --- Музыкальный Модуль: ${track.name} ---`)
@@ -150,19 +207,29 @@ function generateGcode(
   const filamentRadius = FILAMENT_DIAM / 2
   const filamentArea = Math.PI * filamentRadius * filamentRadius
 
+  // Экструзия считается по фактической длине отрезка XY, поэтому корректна при
+  // любом числе шагов и при разной длине сегментов (углы, дно ямы и т.д.).
+  let prev = getShapePoint(0, 0)
+  const emit = (pt: { x: number; y: number }, z: number, layerHeight: number) => {
+    const dist = Math.hypot(pt.x - prev.x, pt.y - prev.y)
+    const eStep = (dist * layerHeight * LINE_WIDTH) / filamentArea * flowMultiplier
+    lines.push(
+      `G1 X${(CENTER_X + pt.x).toFixed(3)} Y${(CENTER_Y + pt.y).toFixed(3)} Z${z.toFixed(3)} E${eStep.toFixed(4)}`,
+    )
+    prev = pt
+    totalG1Lines++
+  }
+
   for (let layer = 0; layer < BASE_LAYERS; layer++) {
     for (let step = 1; step <= STEPS_PER_LAYER; step++) {
-      const pt = getShapePoint(step / STEPS_PER_LAYER, false)
+      const pt = getShapePoint(step / STEPS_PER_LAYER, 0)
       currentZ += BASE_LAYER_HEIGHT / STEPS_PER_LAYER
-      const dist = 1.5
-      const eStep = (dist * BASE_LAYER_HEIGHT * LINE_WIDTH) / filamentArea * flowMultiplier
-      lines.push(
-        `G1 X${(CENTER_X + pt.x).toFixed(3)} Y${(CENTER_Y + pt.y).toFixed(3)} Z${currentZ.toFixed(3)} E${eStep.toFixed(4)}`,
-      )
-      totalG1Lines++
+      emit(pt, currentZ, BASE_LAYER_HEIGHT)
     }
   }
 
+  // 1) Разворачиваем партитуру в плоский список слоёв
+  const layerList: { layerHeight: number; isSilence: boolean }[] = []
   for (const note of track.notes) {
     const isSilence = note.f === 0
     let layerHeight = isSilence ? 0.25 : swipeSpeed / note.f
@@ -171,18 +238,26 @@ function generateGcode(
 
     const physicalHeight = swipeSpeed * (note.d * BEAT)
     const layersCount = Math.max(1, Math.round(physicalHeight / layerHeight))
+    for (let i = 0; i < layersCount; i++) layerList.push({ layerHeight, isSilence })
+  }
 
-    for (let layer = 0; layer < layersCount; layer++) {
-      for (let step = 1; step <= STEPS_PER_LAYER; step++) {
-        const pt = getShapePoint(step / STEPS_PER_LAYER, isSilence)
-        currentZ += layerHeight / STEPS_PER_LAYER
-        const dist = 1.5
-        const eStep = (dist * layerHeight * LINE_WIDTH) / filamentArea * flowMultiplier
-        lines.push(
-          `G1 X${(CENTER_X + pt.x).toFixed(3)} Y${(CENTER_Y + pt.y).toFixed(3)} Z${currentZ.toFixed(3)} E${eStep.toFixed(4)}`,
-        )
-        totalG1Lines++
-      }
+  // 2) Глубина ямы по слоям. Вход в паузу — резкий (стенка уходит ВНУТРь, опирается
+  // на слой ниже — печатается без проблем и даёт чёткое стаккато). Выход из паузы —
+  // плавный: стенка возвращается НАРУЖУ постепенно, иначе получается провисание/бриджинг.
+  const depths: number[] = layerList.map((l) => (l.isSilence ? PIT_DEPTH : 0))
+  for (let i = depths.length - 2; i >= 0; i--) {
+    const maxStep = layerList[i + 1].layerHeight * MAX_OVERHANG
+    if (depths[i] - depths[i + 1] > maxStep) depths[i] = depths[i + 1] + maxStep
+  }
+
+  // 3) Печатаем слои
+  for (let li = 0; li < layerList.length; li++) {
+    const { layerHeight } = layerList[li]
+    const depth = depths[li]
+    for (let step = 1; step <= STEPS_PER_LAYER; step++) {
+      const pt = getShapePoint(step / STEPS_PER_LAYER, depth)
+      currentZ += layerHeight / STEPS_PER_LAYER
+      emit(pt, currentZ, layerHeight)
     }
   }
 
