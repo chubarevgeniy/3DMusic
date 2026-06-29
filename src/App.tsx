@@ -299,7 +299,19 @@ function generateGcode(
     totalG1Lines++
   }
 
+  // Маркеры слоёв — чтобы слайсер при импорте корректно строил превью по высоте
+  // (без них непрерывный Z спирали воспринимается как один слой).
+  let layerNum = 0
+  const layerMarker = (layerHeight: number) => {
+    layerNum++
+    lines.push(';LAYER_CHANGE')
+    lines.push(`;Z:${(currentZ + layerHeight).toFixed(3)}`)
+    lines.push(`;HEIGHT:${layerHeight.toFixed(3)}`)
+    lines.push(`;LAYER:${layerNum}`)
+  }
+
   for (let layer = 0; layer < BASE_LAYERS; layer++) {
+    layerMarker(BASE_LAYER_HEIGHT)
     for (let step = 1; step <= STEPS_PER_LAYER; step++) {
       const pt = getShapePoint(step / STEPS_PER_LAYER, 0)
       currentZ += BASE_LAYER_HEIGHT / STEPS_PER_LAYER
@@ -311,6 +323,7 @@ function generateGcode(
   for (let li = 0; li < layerList.length; li++) {
     const { layerHeight } = layerList[li]
     const depth = depths[li]
+    layerMarker(layerHeight)
     for (let step = 1; step <= STEPS_PER_LAYER; step++) {
       const pt = getShapePoint(step / STEPS_PER_LAYER, depth)
       currentZ += layerHeight / STEPS_PER_LAYER
