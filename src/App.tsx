@@ -185,6 +185,45 @@ function fillPlaceholders(gcode: string, totalLayers: number): string {
     .replace(/[{[]layer_count[}\]]/g, n)
 }
 
+// Делит готовый (нарезанный слайсером) G-code на "начало" и "конец", чтобы взять
+// из него рабочий стартовый/финишный код, а середину (слои модели) заменить музыкой.
+// Начало = всё до первого маркера слоя (или до первого движения с экструзией, если
+// маркеров нет) — там нагрев, хоминг, прайм-линия. Конец = всё после последнего
+// движения с экструзией — там ретракт, остывание, парковка.
+function splitSampleGcode(full: string): { start: string; end: string; startLines: number; endLines: number } | null {
+  const raw = full.split(/\r?\n/)
+  if (raw.length < 4) return null
+
+  const isExtrudeMove = (line: string) => {
+    const s = line.trim()
+    if (!/^G[01]\b/i.test(s)) return false
+    if (!/\b[XY]-?\d/i.test(s)) return false
+    const e = s.match(/\bE(-?\d*\.?\d+)/i)
+    return e !== null && parseFloat(e[1]) > 0
+  }
+  const isLayerMarker = (line: string) =>
+    /^;\s*(LAYER_CHANGE|CHANGE_LAYER|BEFORE_LAYER_CHANGE|LAYER[:\s=]|layer\s)/i.test(line.trim())
+
+  let startEnd = raw.findIndex(isLayerMarker)
+  if (startEnd === -1) startEnd = raw.findIndex(isExtrudeMove)
+  if (startEnd <= 0) return null
+
+  let lastExtrude = -1
+  for (let i = raw.length - 1; i >= 0; i--) {
+    if (isExtrudeMove(raw[i])) { lastExtrude = i; break }
+  }
+  if (lastExtrude < startEnd) return null
+
+  const startArr = raw.slice(0, startEnd)
+  const endArr = raw.slice(lastExtrude + 1)
+  return {
+    start: startArr.join('\n'),
+    end: endArr.join('\n'),
+    startLines: startArr.length,
+    endLines: endArr.length,
+  }
+}
+
 function generateGcode(
   track: Track,
   startGcode: string,
@@ -297,14 +336,21 @@ export default function App() {
   )
   const [swipeSpeed, setSwipeSpeed] = useState(40)
   const [flowMultiplier, setFlowMultiplier] = useState(1.0)
+  const [sampleGcode, setSampleGcode] = useState('')
   const [generatedTracks, setGeneratedTracks] = useState<GeneratedTrack[]>([])
 
   const estimatedHeight = (swipeSpeed * 16 * BEAT + 2).toFixed(1)
 
+  // Если вставлен готовый файл — берём из него реальные начало/конец
+  const sampleSplit = sampleGcode.trim() ? splitSampleGcode(sampleGcode) : null
+  const usingSample = sampleSplit !== null
+
   const handleGenerate = () => {
+    const effStart = sampleSplit ? sampleSplit.start : startGcode
+    const effEnd = sampleSplit ? sampleSplit.end : endGcode
     const results = MARIO_TRACKS.map((track) => {
       const { content, totalZ, layerCount } = generateGcode(
-        track, startGcode, endGcode, swipeSpeed, flowMultiplier,
+        track, effStart, effEnd, swipeSpeed, flowMultiplier,
       )
       return {
         id: track.id,
@@ -354,8 +400,37 @@ export default function App() {
             </h2>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-neutral-400">Начальный G-Code</label>
+          {/* Образец готового G-code: из него берутся рабочие начало и конец */}
+          <div className="space-y-2 md:col-span-2">
+            <label className="text-sm font-medium text-neutral-400 flex justify-between items-center">
+              <span>Образец готового G-code (режим вазы) — опционально</span>
+              {sampleGcode.trim() && (
+                usingSample ? (
+                  <span className="text-emerald-400 text-xs font-semibold">
+                    ✓ Начало: {sampleSplit!.startLines} строк · Конец: {sampleSplit!.endLines} строк
+                  </span>
+                ) : (
+                  <span className="text-red-400 text-xs font-semibold">
+                    ✗ Не удалось распознать слои — будут использованы поля ниже
+                  </span>
+                )
+              )}
+            </label>
+            <textarea
+              value={sampleGcode}
+              onChange={(e) => setSampleGcode(e.target.value)}
+              placeholder="Вставьте сюда целиком .gcode любой вашей печати в режиме вазы (например, цилиндра) с этого же принтера. Начало (нагрев, хоминг, прайм) и конец (ретракт, парковка) возьмутся автоматически, а слои заменятся музыкой."
+              className="w-full h-28 bg-neutral-950 border border-neutral-800 rounded-xl p-3 text-xs font-mono text-emerald-400/80 focus:border-teal-500 focus:ring-1 focus:ring-teal-500 transition-all outline-none resize-none"
+            />
+            <p className="text-xs text-neutral-500">
+              Рекомендуется: так начало/конец гарантированно подходят вашему принтеру (с температурами и хомингом). Если поле пустое — используются ручные поля ниже.
+            </p>
+          </div>
+
+          <div className={`space-y-2 transition-opacity ${usingSample ? 'opacity-40' : ''}`}>
+            <label className="text-sm font-medium text-neutral-400">
+              Начальный G-Code {usingSample && <span className="text-neutral-600">(не используется — взято из образца)</span>}
+            </label>
             <textarea
               value={startGcode}
               onChange={(e) => setStartGcode(e.target.value)}
@@ -363,8 +438,10 @@ export default function App() {
             />
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-neutral-400">Конечный G-Code</label>
+          <div className={`space-y-2 transition-opacity ${usingSample ? 'opacity-40' : ''}`}>
+            <label className="text-sm font-medium text-neutral-400">
+              Конечный G-Code {usingSample && <span className="text-neutral-600">(не используется — взято из образца)</span>}
+            </label>
             <textarea
               value={endGcode}
               onChange={(e) => setEndGcode(e.target.value)}
